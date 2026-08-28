@@ -92,6 +92,20 @@ button:disabled {
   width: 100%;
 }
 
+.telegram-link {
+  display: block;
+  margin: 4px 0 10px;
+  color: #aeb4c0;
+  font-size: 12px;
+  text-align: center;
+  text-decoration: none;
+}
+
+.telegram-link:hover {
+  color: #ffffff;
+  text-decoration: underline;
+}
+
 .message {
   min-height: 18px;
   margin: 8px 2px 0;

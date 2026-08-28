@@ -116,6 +116,8 @@ Amnezia Browser checks the project's GitHub Releases every 6 hours.
 
 The update card is shown only when a version newer than the installed version is available. Updates are not installed silently; the button opens the corresponding GitHub Release.
 
+The popup also includes a centered Telegram link for project update notifications: [@lowtoiler](https://t.me/lowtoiler).
+
 ## Important limitation
 
 Routing is based on Chromium's proxy stack. Traffic that does not use the browser proxy path, such as some WebRTC or other UDP-based browser traffic, is not guaranteed to pass through the local SOCKS proxy.
