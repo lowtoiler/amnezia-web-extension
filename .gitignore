@@ -1,0 +1,5 @@
+*.conf
+*.yaml
+*.log
+*.pid
+.DS_Store

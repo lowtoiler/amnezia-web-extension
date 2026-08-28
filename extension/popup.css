@@ -1,0 +1,107 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 350px;
+  background: #111318;
+  color: #f3f4f6;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.app {
+  padding: 18px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.header p {
+  margin: 4px 0 0;
+  color: #9298a5;
+  font-size: 12px;
+}
+
+.status-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #6b7280;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 14px;
+  background: #1a1d24;
+  border: 1px solid #292d36;
+  border-radius: 12px;
+}
+
+.compact {
+  gap: 5px;
+}
+
+.label {
+  color: #9298a5;
+  font-size: 12px;
+}
+
+.route-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+button {
+  padding: 10px;
+  border: 1px solid #343946;
+  border-radius: 8px;
+  background: #232731;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #2b303c;
+}
+
+button.active {
+  border-color: #ffffff;
+  background: #303541;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.update-card button {
+  width: 100%;
+}
+
+.message {
+  min-height: 18px;
+  margin: 8px 2px 0;
+  color: #9298a5;
+  font-size: 12px;
+}
+
+.version {
+  margin: 10px 2px 0;
+  color: #5f6673;
+  font-size: 10px;
+  text-align: right;
+}

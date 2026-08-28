@@ -1,0 +1,85 @@
+name: Build
+
+"on":
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n install.sh uninstall.sh
+      - run: node --check extension/background.js
+      - run: node --check extension/popup.js
+      - run: node tests/background.test.js
+      - run: python3 -m json.tool extension/manifest.json >/dev/null
+      - run: python3 -m json.tool extension/release.json >/dev/null
+
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: pwsh
+        run: |
+          [void][scriptblock]::Create((Get-Content -Raw install.ps1))
+          [void][scriptblock]::Create((Get-Content -Raw uninstall.ps1))
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    needs:
+      - test-linux
+      - test-windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          export VERSION
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest_path = Path("extension/manifest.json")
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          manifest["version"] = os.environ["VERSION"]
+          manifest_path.write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\\n",
+              encoding="utf-8",
+          )
+
+          release_path = Path("extension/release.json")
+          release = {"repository": os.environ["GITHUB_REPOSITORY"]}
+          release_path.write_text(
+              json.dumps(release, separators=(",", ":")) + "\\n",
+              encoding="utf-8",
+          )
+          PY
+
+          mkdir -p package
+          cp -R extension tests package/
+          cp install.ps1 install.sh uninstall.ps1 uninstall.sh README.md LICENSE BUGFIX_CHANGELOG.md AUDIT_REPORT.md package/
+          cd package
+          zip -r "../amnezia-browser-v${VERSION}.zip" .
+          cd ..
+          sha256sum "amnezia-browser-v${VERSION}.zip" > "amnezia-browser-v${VERSION}.zip.sha256"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            amnezia-browser-v*.zip
+            amnezia-browser-v*.zip.sha256

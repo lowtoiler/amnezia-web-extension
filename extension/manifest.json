@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Amnezia Browser",
+  "version": "1",
+  "description": "Amnezia Premium only for selected browser sites",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5VZ9tZmeX0mTk1Yzig6IhWYX8lpHoNtkfbDLdMJLcfCavGqrUSV7Vm5sf5N3fD/cvH2/hvPPbSgN5NSLboc/ReJHMSuVP5BvJwhA5Gu2r39gYMrTmxejcX3OlgSJBl7DWT4+LTocKny0McCzSPO7/QVK5p1nK8TRIepE77Mu38Lu1xmcOomv1YWTFkj6c0apBp8KCh0CEpKjW830zE/bg3YBJLTs5jrVf9NKMCwMgEAPW7R39PX9LX14BB49Shwg6DivOmno2OMicbOQHk/zkyqEmPEcSWJEy3CMnA5JOFY+pIPQYPA5KlGAcxTyHxoCaZTzo2cnOYI2F3UnSFnH0QIDAQAB",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "proxy",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:9090/*",
+    "https://api.github.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Amnezia Browser"
+  }
+}

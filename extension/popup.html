@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Amnezia Browser</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="app">
+    <header class="header">
+      <div>
+        <h1>Amnezia Browser</h1>
+        <p>Premium только для выбранных сайтов</p>
+      </div>
+      <span id="statusDot" class="status-dot"></span>
+    </header>
+
+    <section class="card">
+      <span class="label">Текущий сайт</span>
+      <strong id="site">Загрузка...</strong>
+    </section>
+
+    <section class="card">
+      <span class="label">Маршрут</span>
+      <div class="route-buttons">
+        <button id="directButton" type="button">Direct</button>
+        <button id="vpnButton" type="button">VPN</button>
+      </div>
+    </section>
+
+    <section class="card compact">
+      <span class="label">Backend</span>
+      <strong id="backendStatus">Проверка...</strong>
+    </section>
+
+    <section id="updateCard" class="card update-card" hidden>
+      <span class="label">Обновление</span>
+      <strong id="updateText"></strong>
+      <button id="updateButton" type="button">Открыть релиз</button>
+    </section>
+
+    <p id="message" class="message"></p>
+    <p class="version">Version 1</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
