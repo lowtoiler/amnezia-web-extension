@@ -413,6 +413,22 @@ ACTUAL_SHA="$(sha256_file "$ARCHIVE")"
 gzip -dc "$ARCHIVE" > "$STAGED_CORE"
 chmod 700 "$STAGED_CORE"
 
+REMOTE_DNS_RESOLVE="false"
+
+if command -v getent >/dev/null 2>&1; then
+  if ! getent ahostsv4 www.youtube.com 2>/dev/null |
+    awk '$1 != "0.0.0.0" && $1 !~ /^127\./ { found=1 } END { exit(found ? 0 : 1) }'
+  then
+    REMOTE_DNS_RESOLVE="true"
+  fi
+else
+  REMOTE_DNS_RESOLVE="true"
+fi
+
+if [[ "$REMOTE_DNS_RESOLVE" == "true" ]]; then
+  printf 'Warning: Local DNS cannot resolve www.youtube.com; tunnel DNS will be used.\n' >&2
+fi
+
 {
   printf 'mixed-port: 1080\n'
   printf 'allow-lan: false\n'
@@ -460,7 +476,7 @@ chmod 700 "$STAGED_CORE"
   printf '\n'
   printf '    udp: true\n'
   printf '    mtu: %s\n' "$MTU"
-  printf '    remote-dns-resolve: false\n'
+  printf '    remote-dns-resolve: %s\n' "$REMOTE_DNS_RESOLVE"
   printf '    dns: '
   csv_yaml "$DNS"
   printf '\n'

@@ -272,7 +272,33 @@ function Build-MihomoConfig {
     $lines.Add("    allowed-ips: $allowedYaml") | Out-Null
     $lines.Add("    udp: true") | Out-Null
     $lines.Add("    mtu: $mtu") | Out-Null
-    $lines.Add("    remote-dns-resolve: false") | Out-Null
+    $remoteDnsValue = "false"
+
+    try {
+        $youtubeAddresses = @(
+            [System.Net.Dns]::GetHostAddresses("www.youtube.com") |
+            Where-Object {
+                $address = $_.ToString()
+                $address -and
+                $address -ne "0.0.0.0" -and
+                $address -ne "::" -and
+                $address -ne "::1" -and
+                -not $address.StartsWith("127.")
+            }
+        )
+
+        if ($youtubeAddresses.Count -eq 0) {
+            $remoteDnsValue = "true"
+        }
+    } catch {
+        $remoteDnsValue = "true"
+    }
+
+    if ($remoteDnsValue -eq "true") {
+        Write-Warning "Local DNS cannot resolve www.youtube.com; tunnel DNS will be used."
+    }
+
+    $lines.Add("    remote-dns-resolve: $remoteDnsValue") | Out-Null
     $lines.Add("    dns: $dnsYaml") | Out-Null
 
     if ($keepaliveValue -match '^\d+$') {
