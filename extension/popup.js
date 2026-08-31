@@ -101,9 +101,9 @@ async function refreshBackendStatus() {
   }
 
   if (status?.running) {
-    backendStatusElement.textContent = "VPN недоступен";
+    backendStatusElement.textContent = "Backend запущен · RTT недоступен";
     statusDot.style.background = "#f59e0b";
-    return false;
+    return true;
   }
 
   backendStatusElement.textContent = "Не запущен";

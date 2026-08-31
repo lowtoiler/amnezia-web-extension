@@ -6,7 +6,10 @@ const UPDATE_ALARM = "amnezia-browser-update-check";
 const UPDATE_INTERVAL_MINUTES = 360;
 const UPDATE_INTERVAL_MS = UPDATE_INTERVAL_MINUTES * 60 * 1000;
 const BACKEND_STATUS_TTL_MS = 5000;
-const DELAY_TEST_URL = "https://www.gstatic.com/generate_204";
+const DELAY_TEST_URLS = [
+  "https://cp.cloudflare.com/generate_204",
+  "https://www.gstatic.com/generate_204"
+];
 
 const DOMAIN_BUNDLES = {
   "youtube.com": [
@@ -179,29 +182,39 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 async function measureProxyDelay(proxyName) {
-  const response = await fetchWithTimeout(
-    `${CONTROLLER}/proxies/${encodeURIComponent(proxyName)}/delay?url=${encodeURIComponent(DELAY_TEST_URL)}&timeout=6000&expected=204`,
-    {
-      headers: {
-        Authorization: `Bearer ${CONTROLLER_SECRET}`
-      },
-      cache: "no-store"
-    },
-    7000
-  );
+  let lastError = null;
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
+  for (const testUrl of DELAY_TEST_URLS) {
+    try {
+      const response = await fetchWithTimeout(
+        `${CONTROLLER}/proxies/${encodeURIComponent(proxyName)}/delay?url=${encodeURIComponent(testUrl)}&timeout=6000`,
+        {
+          headers: {
+            Authorization: `Bearer ${CONTROLLER_SECRET}`
+          },
+          cache: "no-store"
+        },
+        7000
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      const delay = Number(data.delay);
+
+      if (!Number.isFinite(delay) || delay < 0) {
+        throw new Error("Invalid delay result");
+      }
+
+      return delay;
+    } catch (error) {
+      lastError = error;
+    }
   }
 
-  const data = await response.json();
-  const delay = Number(data.delay);
-
-  if (!Number.isFinite(delay) || delay < 0) {
-    throw new Error("Invalid delay result");
-  }
-
-  return delay;
+  throw lastError || new Error("Delay test failed");
 }
 
 async function backendStatus(force = false) {
@@ -257,9 +270,9 @@ async function backendStatus(force = false) {
       };
     } catch (error) {
       result = {
-        ok: false,
+        ok: true,
         running: true,
-        tunnel_ready: false,
+        tunnel_ready: null,
         version: data.version || "",
         error: error.name === "AbortError" ? "Tunnel test timeout" : error.message
       };
