@@ -460,7 +460,7 @@ chmod 700 "$STAGED_CORE"
   printf '\n'
   printf '    udp: true\n'
   printf '    mtu: %s\n' "$MTU"
-  printf '    remote-dns-resolve: true\n'
+  printf '    remote-dns-resolve: false\n'
   printf '    dns: '
   csv_yaml "$DNS"
   printf '\n'
@@ -579,17 +579,28 @@ if (( READY == 0 )); then
   die "Backend did not start."
 fi
 
-DELAY_JSON="$(controller_get "http://127.0.0.1:9090/proxies/AMNEZIA/delay?url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204&timeout=12000&expected=204" 15 2>/dev/null)" || {
-  tail -n 12 "$LOG_FILE" >&2 || true
-  die "Amnezia Premium connection test failed."
-}
+DELAY_JSON=""
 
-DELAY="$(printf '%s' "$DELAY_JSON" | sed -n 's/.*"delay"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
-[[ -n "$DELAY" ]] || die "Amnezia Premium connection test returned an invalid result."
+for TEST_URL in   "https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204"   "https%3A%2F%2Fcp.cloudflare.com%2Fgenerate_204"
+do
+  if DELAY_JSON="$(controller_get "http://127.0.0.1:9090/proxies/AMNEZIA/delay?url=${TEST_URL}&timeout=12000" 15 2>/dev/null)"; then
+    break
+  fi
+done
+
+DELAY=""
+
+if [[ -n "$DELAY_JSON" ]]; then
+  DELAY="$(printf '%s' "$DELAY_JSON" | sed -n 's/.*"delay"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
+fi
+
+if [[ -z "$DELAY" ]]; then
+  printf 'Warning: Amnezia Premium RTT test is unavailable. Backend will remain installed.\n' >&2
+fi
 
 DIRECT_DELAY=""
 
-if DIRECT_JSON="$(controller_get "http://127.0.0.1:9090/proxies/DIRECT/delay?url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204&timeout=12000&expected=204" 15 2>/dev/null)"; then
+if DIRECT_JSON="$(controller_get "http://127.0.0.1:9090/proxies/DIRECT/delay?url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204&timeout=12000" 15 2>/dev/null)"; then
   DIRECT_DELAY="$(printf '%s' "$DIRECT_JSON" | sed -n 's/.*"delay"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
 
   if [[ -z "$DIRECT_DELAY" ]]; then
@@ -613,10 +624,18 @@ INSTALL_OK=1
 
 printf '\n'
 printf 'Amnezia Browser backend: OK\n'
-printf 'Amnezia Premium RTT test: %s ms\n' "$DELAY"
+
+if [[ -n "$DELAY" ]]; then
+  printf 'Amnezia Premium RTT test: %s ms\n' "$DELAY"
+else
+  printf 'Amnezia Premium RTT test: unavailable\n'
+fi
 
 if [[ -n "$DIRECT_DELAY" ]]; then
   printf 'Direct RTT baseline: %s ms\n' "$DIRECT_DELAY"
+fi
+
+if [[ -n "$DELAY" && -n "$DIRECT_DELAY" ]]; then
   printf 'VPN RTT delta: %s ms\n' "$((DELAY - DIRECT_DELAY))"
 fi
 

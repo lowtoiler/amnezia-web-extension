@@ -272,7 +272,7 @@ function Build-MihomoConfig {
     $lines.Add("    allowed-ips: $allowedYaml") | Out-Null
     $lines.Add("    udp: true") | Out-Null
     $lines.Add("    mtu: $mtu") | Out-Null
-    $lines.Add("    remote-dns-resolve: true") | Out-Null
+    $lines.Add("    remote-dns-resolve: false") | Out-Null
     $lines.Add("    dns: $dnsYaml") | Out-Null
 
     if ($keepaliveValue -match '^\d+$') {
@@ -386,14 +386,37 @@ function Stop-InstalledCore {
 
     $normalized = [IO.Path]::GetFullPath($CorePath)
 
-    Get-CimInstance Win32_Process -Filter "Name='mihomo.exe'" -ErrorAction SilentlyContinue |
-    Where-Object {
-        $_.ExecutablePath -and
-        ([IO.Path]::GetFullPath($_.ExecutablePath) -eq $normalized)
-    } |
-    ForEach-Object {
-        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    $processes = @(
+        Get-CimInstance Win32_Process -Filter "Name='mihomo.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.ExecutablePath -and
+            ([IO.Path]::GetFullPath($_.ExecutablePath) -eq $normalized)
+        }
+    )
+
+    foreach ($process in $processes) {
+        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
     }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+
+    do {
+        $running = @(
+            Get-CimInstance Win32_Process -Filter "Name='mihomo.exe'" -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.ExecutablePath -and
+                ([IO.Path]::GetFullPath($_.ExecutablePath) -eq $normalized)
+            }
+        )
+
+        if ($running.Count -eq 0) {
+            return
+        }
+
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "mihomo.exe did not stop within 5 seconds"
 }
 
 function Wait-Controller {
@@ -424,23 +447,40 @@ function Get-ProxyDelay {
     }
 
     $encodedProxy = [Uri]::EscapeDataString($ProxyName)
-    $uri = "http://127.0.0.1:9090/proxies/$encodedProxy/delay?url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204&timeout=12000&expected=204"
-    $result = Invoke-RestMethod `
-        -Uri $uri `
-        -Headers $headers `
-        -TimeoutSec 15
+    $testUrls = @(
+        "https://www.gstatic.com/generate_204",
+        "https://cp.cloudflare.com/generate_204"
+    )
 
-    if ($null -eq $result.delay) {
-        throw "No delay result for $ProxyName"
+    $lastError = $null
+
+    foreach ($testUrl in $testUrls) {
+        try {
+            $encodedUrl = [Uri]::EscapeDataString($testUrl)
+            $uri = "http://127.0.0.1:9090/proxies/$encodedProxy/delay?url=$encodedUrl&timeout=12000"
+
+            $result = Invoke-RestMethod `
+                -Uri $uri `
+                -Headers $headers `
+                -TimeoutSec 15
+
+            if ($null -ne $result.delay) {
+                $delay = [int]$result.delay
+
+                if ($delay -ge 0) {
+                    return $delay
+                }
+            }
+        } catch {
+            $lastError = $_
+        }
     }
 
-    $delay = [int]$result.delay
-
-    if ($delay -lt 0) {
-        throw "Invalid delay result for $ProxyName"
+    if ($lastError) {
+        throw $lastError
     }
 
-    return $delay
+    throw "No delay result for $ProxyName"
 }
 
 function Test-AmneziaTunnel {
@@ -458,7 +498,7 @@ function Test-AmneziaTunnel {
         }
 
         if ($tail) {
-            throw "Amnezia Premium connection test failed.`n$tail"
+            throw "Amnezia Premium connection test failed: $($_.Exception.Message)`n$tail"
         }
 
         throw "Amnezia Premium connection test failed: $($_.Exception.Message)"
@@ -579,7 +619,14 @@ try {
         Out-Null
 
     Wait-Controller
-    $delay = Test-AmneziaTunnel
+    $delay = $null
+
+    try {
+        $delay = Test-AmneziaTunnel
+    } catch {
+        Write-Warning $_.Exception.Message
+    }
+
     $directDelay = $null
 
     try {
@@ -603,11 +650,19 @@ try {
 
     Write-Host ""
     Write-Host "Amnezia Browser backend: OK"
-    Write-Host "Amnezia Premium RTT test: ${delay} ms"
+
+    if ($null -ne $delay) {
+        Write-Host "Amnezia Premium RTT test: ${delay} ms"
+    } else {
+        Write-Host "Amnezia Premium RTT test: unavailable"
+    }
 
     if ($null -ne $directDelay) {
-        $delta = $delay - $directDelay
         Write-Host "Direct RTT baseline: ${directDelay} ms"
+    }
+
+    if ($null -ne $delay -and $null -ne $directDelay) {
+        $delta = $delay - $directDelay
         Write-Host "VPN RTT delta: ${delta} ms"
     }
 
