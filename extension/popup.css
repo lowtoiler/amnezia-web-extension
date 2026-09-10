@@ -119,3 +119,18 @@ button:disabled {
   font-size: 10px;
   text-align: right;
 }
+
+.card[hidden] { display: none; }
+strong, .hint, .message, td { overflow-wrap: anywhere; }
+.hint { color: #a6aeba; font-size: 12px; line-height: 1.5; }
+button.selected { border-color: #b7c7e8; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+body { width: 390px; }
+.options-body { width: auto; max-width: 980px; margin: 0 auto; }
+input, select { padding: 9px; color: #f3f4f6; background: #232731; border: 1px solid #475569; border-radius: 6px; }
+input[type="checkbox"] { accent-color: #93c5fd; }
+.form-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+th, td { text-align: left; padding: 8px; border-bottom: 1px solid #343946; }
+td button { margin: 3px; padding: 6px; }
+code { white-space: normal; overflow-wrap: anywhere; }

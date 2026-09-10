@@ -1,506 +1,336 @@
-const PROXY_HOST = "127.0.0.1";
-const PROXY_PORT = 1080;
-const CONTROLLER = "http://127.0.0.1:9090";
-const CONTROLLER_SECRET = "amnezia-browser-local-v1-6f2e62c4";
-const UPDATE_ALARM = "amnezia-browser-update-check";
-const UPDATE_INTERVAL_MINUTES = 360;
-const UPDATE_INTERVAL_MS = UPDATE_INTERVAL_MINUTES * 60 * 1000;
-const BACKEND_STATUS_TTL_MS = 5000;
-const DELAY_TEST_URLS = [
-  "https://cp.cloudflare.com/generate_204",
-  "https://www.gstatic.com/generate_204"
-];
+importScripts('routing.js', 'controller.js');
 
-const DOMAIN_BUNDLES = {
-  "youtube.com": [
-    "youtube.com",
-    "youtu.be",
-    "googlevideo.com",
-    "ytimg.com",
-    "youtube-nocookie.com",
-    "ggpht.com",
-    "youtubei.googleapis.com",
-    "youtube.googleapis.com"
-  ],
-  "discord.com": [
-    "discord.com",
-    "discordapp.com",
-    "discordapp.net",
-    "discord.gg",
-    "discord.media"
-  ]
-};
+const UPDATE_ALARM = 'amnezia-browser-update-check';
+const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const defaults = { enabled: true, protectWebRtc: true, preventDnsPrefetch: true };
+let state;
+let queue = Promise.resolve();
+let diagnosticsQueue = Promise.resolve();
+let statusFlight = null;
+let probeFlight = null;
+let statusCache = null;
+let probeCache = null;
+let updateFlight = null;
+let lastApplyError = null;
+let lastProxyError = null;
+let privacyWarnings = [];
+const ready = loadState();
 
-let cachedBackendStatus = null;
-let cachedBackendStatusAt = 0;
-
-function normalizeHost(hostname) {
-  const host = String(hostname || "").toLowerCase().replace(/\.$/, "");
-  return host.startsWith("www.") ? host.slice(4) : host;
+async function loadState() {
+  await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+  const stored = await chrome.storage.local.get(['appState', 'routeRules']);
+  const candidate = stored.appState;
+  if (candidate && candidate.schemaVersion !== 1) throw new Error('Неподдерживаемый формат настроек');
+  state = {
+    schemaVersion: 1,
+    routeRules: Routing.normalizeRules(candidate?.routeRules || stored.routeRules || {}),
+    preferences: validatePreferences(candidate?.preferences || defaults),
+    connection: candidate?.connection ? Controller.validateConnection(candidate.connection) : null,
+    revision: Number.isSafeInteger(candidate?.revision) ? candidate.revision : 0
+  };
+  await chrome.storage.local.set({ appState: state });
 }
 
-function hostMatches(host, suffix) {
-  return host === suffix || host.endsWith(`.${suffix}`);
-}
-
-function canonicalRouteHost(hostname) {
-  const normalized = normalizeHost(hostname);
-
-  for (const [root, bundle] of Object.entries(DOMAIN_BUNDLES)) {
-    for (const host of bundle) {
-      if (hostMatches(normalized, host)) {
-        return root;
-      }
-    }
+function validatePreferences(value) {
+  const result = { ...defaults };
+  for (const [key, item] of Object.entries(value)) {
+    if (!Object.hasOwn(defaults, key) || typeof item !== 'boolean') throw new Error('Некорректные настройки');
+    result[key] = item;
   }
-
-  return normalized;
-}
-
-function canonicalizeRouteRules(rules) {
-  const canonical = {};
-
-  for (const [hostname, route] of Object.entries(rules || {})) {
-    if (route !== "vpn") {
-      continue;
-    }
-
-    const host = canonicalRouteHost(hostname);
-
-    if (host) {
-      canonical[host] = "vpn";
-    }
-  }
-
-  return canonical;
-}
-
-function routeRulesEqual(left, right) {
-  const leftEntries = Object.entries(left || {});
-  const rightEntries = Object.entries(right || {});
-
-  if (leftEntries.length !== rightEntries.length) {
-    return false;
-  }
-
-  return leftEntries.every(([hostname, route]) => right?.[hostname] === route);
-}
-
-function expandVpnHosts(rules) {
-  const hosts = new Set();
-
-  for (const [hostname, route] of Object.entries(rules)) {
-    if (route !== "vpn") {
-      continue;
-    }
-
-    const normalized = canonicalRouteHost(hostname);
-    const bundle = DOMAIN_BUNDLES[normalized] || [normalized];
-
-    for (const host of bundle) {
-      if (host) {
-        hosts.add(host);
-      }
-    }
-  }
-
-  return Array.from(hosts);
-}
-
-function buildPacScript(vpnHosts) {
-  const hosts = JSON.stringify(vpnHosts);
-
-  return `
-var vpnHosts = ${hosts};
-function matchesVpnHost(host) {
-  host = host.toLowerCase();
-  for (var i = 0; i < vpnHosts.length; i++) {
-    var ruleHost = vpnHosts[i];
-    if (host === ruleHost || dnsDomainIs(host, "." + ruleHost)) {
-      return true;
-    }
-  }
-  return false;
-}
-function FindProxyForURL(url, host) {
-  if (matchesVpnHost(host)) {
-    return "SOCKS5 ${PROXY_HOST}:${PROXY_PORT}";
-  }
-  return "DIRECT";
-}
-`;
-}
-
-async function syncProxyRules() {
-  const stored = await chrome.storage.local.get("routeRules");
-  const storedRules = stored.routeRules || {};
-  const rules = canonicalizeRouteRules(storedRules);
-
-  if (!routeRulesEqual(storedRules, rules)) {
-    await chrome.storage.local.set({
-      routeRules: rules
-    });
-  }
-
-  const vpnHosts = expandVpnHosts(rules);
-
-  if (vpnHosts.length === 0) {
-    await chrome.proxy.settings.set({
-      value: { mode: "direct" },
-      scope: "regular"
-    });
-
-    return { ok: true, applied: false };
-  }
-
-  await chrome.proxy.settings.set({
-    value: {
-      mode: "pac_script",
-      pacScript: {
-        data: buildPacScript(vpnHosts),
-        mandatory: true
-      }
-    },
-    scope: "regular"
-  });
-
-  return { ok: true, applied: true };
-}
-
-async function fetchWithTimeout(url, options, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    return await fetch(url, {
-      ...options,
-      signal: controller.signal
-    });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function measureProxyDelay(proxyName) {
-  let lastError = null;
-
-  for (const testUrl of DELAY_TEST_URLS) {
-    try {
-      const response = await fetchWithTimeout(
-        `${CONTROLLER}/proxies/${encodeURIComponent(proxyName)}/delay?url=${encodeURIComponent(testUrl)}&timeout=6000`,
-        {
-          headers: {
-            Authorization: `Bearer ${CONTROLLER_SECRET}`
-          },
-          cache: "no-store"
-        },
-        7000
-      );
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      const data = await response.json();
-      const delay = Number(data.delay);
-
-      if (!Number.isFinite(delay) || delay < 0) {
-        throw new Error("Invalid delay result");
-      }
-
-      return delay;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  throw lastError || new Error("Delay test failed");
-}
-
-async function backendStatus(force = false) {
-  const now = Date.now();
-
-  if (!force && cachedBackendStatus && now - cachedBackendStatusAt < BACKEND_STATUS_TTL_MS) {
-    return cachedBackendStatus;
-  }
-
-  let result;
-
-  try {
-    const response = await fetchWithTimeout(
-      `${CONTROLLER}/version`,
-      {
-        headers: {
-          Authorization: `Bearer ${CONTROLLER_SECRET}`
-        },
-        cache: "no-store"
-      },
-      3000
-    );
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    try {
-      const [vpnResult, directResult] = await Promise.allSettled([
-        measureProxyDelay("AMNEZIA"),
-        measureProxyDelay("DIRECT")
-      ]);
-
-      if (vpnResult.status !== "fulfilled") {
-        throw vpnResult.reason;
-      }
-
-      const delay = vpnResult.value;
-      const directDelay = directResult.status === "fulfilled"
-        ? directResult.value
-        : null;
-
-      result = {
-        ok: true,
-        running: true,
-        tunnel_ready: true,
-        delay,
-        direct_delay: directDelay,
-        vpn_overhead: Number.isFinite(directDelay) ? Math.max(0, delay - directDelay) : null,
-        version: data.version || ""
-      };
-    } catch (error) {
-      result = {
-        ok: true,
-        running: true,
-        tunnel_ready: null,
-        version: data.version || "",
-        error: error.name === "AbortError" ? "Tunnel test timeout" : error.message
-      };
-    }
-  } catch (error) {
-    result = {
-      ok: false,
-      running: false,
-      tunnel_ready: false,
-      error: error.name === "AbortError" ? "Backend timeout" : error.message
-    };
-  }
-
-  cachedBackendStatus = result;
-  cachedBackendStatusAt = Date.now();
   return result;
 }
 
+function serialize(action) {
+  const task = queue.then(async () => { await ready; return action(); });
+  queue = task.catch(() => {});
+  return task;
+}
+
+async function saveState(next) {
+  const saved = { ...next, revision: state.revision + 1 };
+  await chrome.storage.local.set({ appState: saved });
+  state = saved;
+}
+
+function desiredProxy() {
+  const active = state.preferences.enabled && Object.values(state.routeRules).includes('vpn');
+  return active ? { mode: 'pac_script', pacScript: { data: Routing.buildPacScript(state.routeRules, state.connection?.proxyPort || 1080), mandatory: true } } : null;
+}
+
+function sameProxy(actual, desired) {
+  return actual?.mode === desired?.mode && actual?.pacScript?.data === desired?.pacScript?.data && actual?.pacScript?.mandatory === true;
+}
+
+async function recordError(action, error) {
+  const entry = { at: Date.now(), action, code: error.code || 'ERROR', message: String(error.message || 'Ошибка').slice(0, 300) };
+  console.error(action, entry.code, entry.message);
+  diagnosticsQueue = diagnosticsQueue.then(async () => {
+    try {
+      const previous = await chrome.storage.local.get('diagnostics');
+      const events = Array.isArray(previous.diagnostics) ? previous.diagnostics : [];
+      await chrome.storage.local.set({ diagnostics: [...events, entry].slice(-50) });
+    } catch (storageError) {
+      console.error('Не удалось сохранить диагностику', storageError.name);
+    }
+  });
+  await diagnosticsQueue;
+}
+
+async function applyPrivacy(active) {
+  const warnings = [];
+  for (const [key, setting, value] of [
+    ['protectWebRtc', chrome.privacy.network.webRTCIPHandlingPolicy, 'disable_non_proxied_udp'],
+    ['preventDnsPrefetch', chrome.privacy.network.networkPredictionEnabled, false]
+  ]) {
+    try {
+      if (!active || !state.preferences[key]) {
+        await setting.clear({ scope: 'regular' });
+        continue;
+      }
+      const current = await setting.get({});
+      if (['not_controllable', 'controlled_by_other_extensions'].includes(current.levelOfControl)) throw new Error('Настройка ' + key + ' контролируется извне');
+      if (current.levelOfControl !== 'controlled_by_this_extension' || current.value !== value) await setting.set({ value, scope: 'regular' });
+      const applied = await setting.get({});
+      if (applied.value !== value || applied.levelOfControl !== 'controlled_by_this_extension') throw new Error('Не удалось подтвердить ' + key);
+    } catch (error) {
+      warnings.push(error.message);
+      await recordError('privacy', error);
+    }
+  }
+  privacyWarnings = warnings;
+}
+
+async function inspectProxy() {
+  const current = await chrome.proxy.settings.get({ incognito: false });
+  const desired = desiredProxy();
+  if (!desired) return { applied: current.levelOfControl !== 'controlled_by_this_extension', mode: 'released', levelOfControl: current.levelOfControl };
+  return { applied: current.levelOfControl === 'controlled_by_this_extension' && sameProxy(current.value, desired), mode: 'rules', levelOfControl: current.levelOfControl };
+}
+
+async function inspectPrivacy() {
+  const warnings = [];
+  const active = Boolean(desiredProxy());
+  for (const [key, setting, value] of [
+    ['protectWebRtc', chrome.privacy.network.webRTCIPHandlingPolicy, 'disable_non_proxied_udp'],
+    ['preventDnsPrefetch', chrome.privacy.network.networkPredictionEnabled, false]
+  ]) {
+    try {
+      const current = await setting.get({});
+      if (active && state.preferences[key]) {
+        if (current.value !== value || current.levelOfControl !== 'controlled_by_this_extension') warnings.push('Не подтверждена настройка ' + key);
+      } else if (current.levelOfControl === 'controlled_by_this_extension') warnings.push('Не освобождена настройка ' + key);
+    } catch (error) { warnings.push(error.message); }
+  }
+  privacyWarnings = warnings;
+}
+
+async function updateBadge(applied) {
+  await chrome.action.setBadgeText({ text: !applied.applied || privacyWarnings.length ? '!' : applied.mode === 'rules' ? 'ON' : '' });
+  await chrome.action.setBadgeBackgroundColor({ color: !applied.applied || privacyWarnings.length ? '#b45309' : '#374151' });
+}
+
+async function applyRules() {
+  const desired = desiredProxy();
+  lastApplyError = null;
+  try {
+    if (desired) {
+      await applyPrivacy(true);
+      const current = await chrome.proxy.settings.get({ incognito: false });
+      if (['not_controllable', 'controlled_by_other_extensions'].includes(current.levelOfControl)) throw new Error('Прокси управляется политикой или другим расширением');
+      if (!sameProxy(current.value, desired) || current.levelOfControl !== 'controlled_by_this_extension') await chrome.proxy.settings.set({ value: desired, scope: 'regular' });
+    } else {
+      try { await chrome.proxy.settings.clear({ scope: 'regular' }); }
+      finally { await applyPrivacy(false); }
+    }
+    const applied = await inspectProxy();
+    if (!applied.applied) throw new Error('Chrome не подтвердил применение настройки прокси');
+    await updateBadge(applied);
+    return applied;
+  } catch (error) {
+    lastApplyError = error.message;
+    await recordError('apply-proxy', error);
+    await updateBadge({ applied: false });
+    throw error;
+  }
+}
+
+async function snapshot(host) {
+  await ready;
+  const applied = await inspectProxy();
+  await inspectPrivacy();
+  return {
+    version: chrome.runtime.getManifest().version,
+    revision: state.revision,
+    rules: state.routeRules,
+    preferences: state.preferences,
+    paired: Boolean(state.connection),
+    route: host ? Routing.resolveRoute(state.routeRules, host) : null,
+    proxy: applied,
+    applyError: lastApplyError,
+    lastProxyError,
+    privacyWarnings,
+    probe: probeCache?.value || null
+  };
+}
+
+async function backendStatus(force = false) {
+  await ready;
+  if (!state.connection) return { controller: 'unpaired', checkedAt: Date.now() };
+  const fingerprint = state.connection.secret;
+  if (statusFlight?.key === fingerprint) return statusFlight.promise;
+  if (!force && statusCache?.key === fingerprint && Date.now() - statusCache.value.checkedAt < 5000) return statusCache.value;
+  const promise = Controller.client(state.connection).status().catch(error => ({ controller: 'unreachable', code: error.code, message: error.message, checkedAt: Date.now() })).then(value => {
+    if (state.connection?.secret === fingerprint) statusCache = { key: fingerprint, value };
+    return value;
+  }).finally(() => { if (statusFlight?.promise === promise) statusFlight = null; });
+  statusFlight = { key: fingerprint, promise };
+  return promise;
+}
+
+async function probeBackend() {
+  await ready;
+  if (!state.connection) throw new Error('Импортируй файл подключения backend');
+  const fingerprint = state.connection.secret;
+  if (probeFlight?.key === fingerprint) return probeFlight.promise;
+  const client = Controller.client(state.connection);
+  const promise = client.status().then(() => client.probe()).catch(error => ({ outbound: 'unreachable', code: error.code || 'ERROR', message: error.message, checkedAt: Date.now(), dataPath: 'not-tested' })).then(value => {
+    if (state.connection?.secret === fingerprint) probeCache = { key: fingerprint, value };
+    return value;
+  }).finally(() => { if (probeFlight?.promise === promise) probeFlight = null; });
+  probeFlight = { key: fingerprint, promise };
+  return promise;
+}
+
 function parseVersion(value) {
-  return String(value || "")
-    .replace(/^v/i, "")
-    .split(".")
-    .map((part) => Number.parseInt(part, 10) || 0);
+  const text = String(value || '').replace(/^v/u, '');
+  if (!/^\d{1,5}(?:\.\d{1,5}){0,3}$/u.test(text)) throw new Error('Некорректная версия релиза');
+  const parts = text.split('.').map(Number);
+  if (parts.some(part => part > 65535) || parts.every(part => part === 0)) throw new Error('Некорректная версия релиза');
+  return parts;
 }
 
 function isNewerVersion(latest, current) {
   const a = parseVersion(latest);
   const b = parseVersion(current);
-  const length = Math.max(a.length, b.length);
-
-  for (let i = 0; i < length; i++) {
-    const left = a[i] || 0;
-    const right = b[i] || 0;
-
-    if (left > right) {
-      return true;
-    }
-
-    if (left < right) {
-      return false;
-    }
+  for (let i = 0; i < 4; i++) {
+    if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
   }
-
   return false;
 }
 
-async function getRepository() {
-  try {
-    const response = await fetch(chrome.runtime.getURL("release.json"), {
-      cache: "no-store"
-    });
-
-    const data = await response.json();
-    const repository = String(data.repository || "").trim();
-
-    if (!repository || repository === "__REPOSITORY__") {
-      return "";
+async function checkUpdate(force = false) {
+  if (updateFlight) return updateFlight;
+  updateFlight = (async () => {
+    const stored = await chrome.storage.local.get(['updateStatus', 'updateCheckedAt']);
+    if (!force && stored.updateStatus && Date.now() - (stored.updateCheckedAt || 0) < UPDATE_INTERVAL_MS) return stored.updateStatus;
+    let result;
+    try {
+      const metadata = await Controller.requestJson(chrome.runtime.getURL('release.json'), {}, 3000);
+      const repository = metadata.repository;
+      if (!repository || repository === '__REPOSITORY__') {
+        result = { state: 'unconfigured' };
+      } else {
+        if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository)) throw new Error('Некорректный репозиторий обновлений');
+        const release = await Controller.requestJson('https://api.github.com/repos/' + repository + '/releases/latest', { headers: { Accept: 'application/vnd.github+json' } }, 10000);
+        const version = String(release.tag_name || '').replace(/^v/u, '');
+        parseVersion(version);
+        const url = new URL(release.html_url);
+        if (url.origin !== 'https://github.com' || !url.pathname.startsWith('/' + repository + '/releases/tag/')) throw new Error('Некорректная ссылка релиза');
+        result = { state: isNewerVersion(version, chrome.runtime.getManifest().version) ? 'available' : 'current', version, url: url.href };
+      }
+    } catch (error) {
+      result = { state: 'error', message: error.message, lastSuccess: stored.updateStatus?.state !== 'error' ? stored.updateStatus || null : stored.updateStatus?.lastSuccess || null };
+      await recordError('update', error);
     }
-
-    return repository;
-  } catch {
-    return "";
-  }
+    result.checkedAt = Date.now();
+    await chrome.storage.local.set({ updateStatus: result, updateCheckedAt: result.checkedAt });
+    return result;
+  })().finally(() => { updateFlight = null; });
+  return updateFlight;
 }
 
-async function checkUpdate() {
-  const repository = await getRepository();
-
-  if (!repository) {
-    const result = {
-      ok: true,
-      configured: false,
-      update_available: false
-    };
-
-    await chrome.storage.local.set({
-      updateStatus: result,
-      updateCheckedAt: Date.now()
-    });
-
-    return result;
-  }
-
-  try {
-    const response = await fetchWithTimeout(
-      `https://api.github.com/repos/${repository}/releases/latest`,
-      {
-        headers: {
-          Accept: "application/vnd.github+json"
-        },
-        cache: "no-store"
-      },
-      10000
-    );
-
-    if (!response.ok) {
-      throw new Error(`GitHub HTTP ${response.status}`);
+async function handleMessage(message) {
+  if (!message || typeof message.type !== 'string') throw new Error('Некорректное сообщение');
+  await ready;
+  switch (message.type) {
+    case 'SNAPSHOT': return snapshot(message.host || '');
+    case 'BACKEND_STATUS': return backendStatus(Boolean(message.force));
+    case 'PROBE_BACKEND': return probeBackend();
+    case 'CHECK_UPDATE': return checkUpdate(Boolean(message.force));
+    case 'EXPORT_RULES': return { schemaVersion: 1, routeRules: state.routeRules, preferences: state.preferences };
+    case 'DIAGNOSTICS': {
+      await diagnosticsQueue;
+      const stored = await chrome.storage.local.get('diagnostics');
+      return { version: chrome.runtime.getManifest().version, snapshot: await snapshot(), backend: await backendStatus(), events: stored.diagnostics || [] };
     }
-
-    const release = await response.json();
-    const currentVersion = chrome.runtime.getManifest().version;
-    const latestVersion = String(release.tag_name || "").replace(/^v/i, "");
-    const result = {
-      ok: true,
-      configured: true,
-      update_available: isNewerVersion(latestVersion, currentVersion),
-      current_version: currentVersion,
-      latest_version: latestVersion,
-      release_url: release.html_url || ""
-    };
-
-    await chrome.storage.local.set({
-      updateStatus: result,
-      updateCheckedAt: Date.now()
+    case 'SET_RULE': return serialize(async () => {
+      const host = Routing.normalizeHost(message.host);
+      if (!['vpn', 'direct', 'remove'].includes(message.route)) throw new Error('Неизвестный маршрут');
+      const rules = Object.assign(Object.create(null), state.routeRules);
+      if (message.route === 'remove') delete rules[host]; else rules[host] = message.route;
+      await saveState({ ...state, routeRules: Routing.normalizeRules(rules) });
+      await applyRules();
+      return snapshot(host);
     });
-
-    return result;
-  } catch (error) {
-    const result = {
-      ok: false,
-      configured: true,
-      update_available: false,
-      error: error.name === "AbortError" ? "GitHub timeout" : error.message
-    };
-
-    await chrome.storage.local.set({
-      updateStatus: result,
-      updateCheckedAt: Date.now()
+    case 'SET_PREFERENCES': return serialize(async () => {
+      await saveState({ ...state, preferences: validatePreferences({ ...state.preferences, ...message.preferences }) });
+      await applyRules();
+      return snapshot();
     });
-
-    return result;
+    case 'IMPORT_RULES': return serialize(async () => {
+      if (message.data?.schemaVersion !== 1) throw new Error('Неподдерживаемый формат импорта');
+      const imported = Routing.normalizeRules(message.data.routeRules);
+      const rules = Routing.normalizeRules({ ...state.routeRules, ...imported });
+      await saveState({ ...state, routeRules: rules });
+      await applyRules();
+      return snapshot();
+    });
+    case 'SET_CONNECTION': return serialize(async () => {
+      const connection = Controller.validateConnection(message.connection);
+      await saveState({ ...state, connection });
+      statusCache = null;
+      probeCache = null;
+      await applyRules();
+      return { paired: true, backend: await backendStatus(true) };
+    });
+    case 'SYNC_PROXY': return serialize(applyRules);
+    default: throw new Error('Неизвестная команда');
   }
 }
 
-async function checkUpdateIfStale() {
-  const stored = await chrome.storage.local.get("updateCheckedAt");
-  const checkedAt = Number(stored.updateCheckedAt) || 0;
+chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if (sender.id !== chrome.runtime.id) return false;
+  handleMessage(message).then(data => respond({ ok: true, data })).catch(error => respond({ ok: false, error: error.message, code: error.code || 'ERROR' }));
+  return true;
+});
 
-  if (Date.now() - checkedAt < UPDATE_INTERVAL_MS) {
-    return null;
-  }
-
-  return checkUpdate();
+async function ensureAlarm() {
+  if (!await chrome.alarms.get(UPDATE_ALARM)) await chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 360 });
 }
 
-async function ensureUpdateAlarm() {
-  const alarm = await chrome.alarms.get(UPDATE_ALARM);
-
-  if (!alarm) {
-    chrome.alarms.create(UPDATE_ALARM, {
-      periodInMinutes: UPDATE_INTERVAL_MINUTES
-    });
-  }
+function initialize() {
+  return serialize(async () => { await applyRules(); await ensureAlarm(); });
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  syncProxyRules().catch(() => {});
-  ensureUpdateAlarm().catch(() => {});
-  checkUpdate().catch(() => {});
+  initialize().catch(error => recordError('installed', error));
+  checkUpdate().catch(error => recordError('update-storage', error));
 });
-
 chrome.runtime.onStartup.addListener(() => {
-  syncProxyRules().catch(() => {});
-  ensureUpdateAlarm().catch(() => {});
-  checkUpdateIfStale().catch(() => {});
+  initialize().catch(error => recordError('startup', error));
+  checkUpdate().catch(error => recordError('update-storage', error));
 });
-
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === UPDATE_ALARM) {
-    checkUpdate().catch(() => {});
-  }
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === UPDATE_ALARM) checkUpdate(true).catch(error => recordError('update-storage', error));
 });
-
-chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === "local" && changes.routeRules) {
-    syncProxyRules().catch(() => {});
-  }
+function inspectSettingsChanged() {
+  serialize(async () => { await inspectPrivacy(); await updateBadge(await inspectProxy()); }).catch(error => recordError('settings-changed', error));
+}
+chrome.proxy.settings.onChange.addListener(inspectSettingsChanged);
+chrome.privacy.network.webRTCIPHandlingPolicy.onChange.addListener(inspectSettingsChanged);
+chrome.privacy.network.networkPredictionEnabled.onChange.addListener(inspectSettingsChanged);
+chrome.proxy.onProxyError.addListener(details => {
+  const error = new Error(String(details.error || 'Ошибка браузерного прокси'));
+  serialize(async () => { lastProxyError = { message: error.message, at: Date.now() }; await recordError('proxy-network', error); await updateBadge({ applied: false }); }).catch(failure => recordError('proxy-error', failure));
 });
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === "BACKEND_STATUS") {
-    backendStatus(Boolean(message.force)).then(sendResponse);
-    return true;
-  }
-
-  if (message?.type === "SYNC_PROXY") {
-    syncProxyRules()
-      .then(sendResponse)
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
-    return true;
-  }
-
-  if (message?.type === "NORMALIZE_HOST") {
-    sendResponse({
-      ok: true,
-      host: canonicalRouteHost(message.host)
-    });
-    return false;
-  }
-
-  if (message?.type === "CHECK_UPDATE") {
-    checkUpdate().then(sendResponse);
-    return true;
-  }
-
-  if (message?.type === "GET_UPDATE_STATUS") {
-    chrome.storage.local
-      .get(["updateStatus", "updateCheckedAt"])
-      .then((stored) => {
-        sendResponse({
-          ok: true,
-          status: stored.updateStatus || null,
-          checked_at: stored.updateCheckedAt || null
-        });
-      })
-      .catch((error) => {
-        sendResponse({
-          ok: false,
-          status: null,
-          checked_at: null,
-          error: error.message
-        });
-      });
-    return true;
-  }
-
-  return false;
-});
-
-ensureUpdateAlarm().catch(() => {});
-syncProxyRules().catch(() => {});
+initialize().catch(error => recordError('initialize', error));

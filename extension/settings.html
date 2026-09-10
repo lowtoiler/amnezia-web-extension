@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Настройки Amnezia Browser</title><link rel="stylesheet" href="popup.css"></head>
+<body class="options-body"><main class="app">
+  <h1>Amnezia Browser · версия <span id="version"></span></h1>
+  <p id="message" class="message" role="status" aria-live="polite"></p>
+  <section class="card">
+    <h2>Подключение backend</h2>
+    <p class="hint">После install.ps1 или install.sh выбери connection.json из каталога установки. Этот файл содержит ключ локального API: храни его у себя.</p>
+    <label>Файл подключения <input id="connectionFile" type="file" accept=".json,application/json"></label>
+    <strong id="connectionStatus"></strong>
+    <p class="hint">Windows: %LOCALAPPDATA%\AmneziaBrowser\connection.json<br>Linux: ~/.config/amnezia-browser/connection.json</p>
+    <p>Запуск и восстановление выполняются менеджером backend. Повторное скачивание ядра для этого не нужно.</p>
+    <p>Windows PowerShell: <code>&amp; "$env:LOCALAPPDATA\AmneziaBrowser\backend.ps1" -Action Restart</code></p>
+    <p>Linux: <code>~/.local/lib/amnezia-browser/backend.sh restart</code></p>
+    <p class="hint">Доступные действия: Start / Stop / Restart / Status / Check / Run в PowerShell; start / stop / restart / status / check / run в Linux. Check проверяет HTTP через настоящий SOCKS-порт.</p>
+  </section>
+  <section class="card">
+    <h2>Маршруты и приватность</h2>
+    <label><input id="enabled" type="checkbox"> Управлять маршрутами браузера</label>
+    <label><input id="protectWebRtc" type="checkbox"> Ограничивать непроксируемый WebRTC UDP при наличии VPN-правил</label>
+    <label><input id="preventDnsPrefetch" type="checkbox"> Отключать предиктивные DNS-запросы браузера при наличии VPN-правил</label>
+    <p class="hint">Эти настройки действуют на профиль, включая наследуемые настройки incognito. Ограничение WebRTC может изменить работу звонков. Когда VPN-правил нет или управление выключено, расширение освобождает свои proxy/privacy-настройки. При активном PAC остальные домены идут Direct. Это не системный VPN и не гарантия отсутствия всех сетевых утечек.</p>
+    <strong id="applyStatus"></strong>
+  </section>
+  <section class="card">
+    <h2>Правила доменов</h2>
+    <p class="hint">Правило охватывает домен и его поддомены. Более специфичное правило имеет приоритет. VPN для YouTube и Discord включает набор связанных доменов; явное правило для того же домена имеет приоритет над набором.</p>
+    <form id="ruleForm" class="form-row"><label>Домен <input id="domain" required placeholder="example.com"></label><label>Маршрут <select id="route"><option value="vpn">VPN</option><option value="direct">Direct</option></select></label><button type="submit">Сохранить правило</button></form>
+    <label>Поиск <input id="search" type="search" placeholder="Домен"></label>
+    <table><thead><tr><th>Домен</th><th>Маршрут</th><th>Действия</th></tr></thead><tbody id="rules"></tbody></table>
+    <p id="ruleCount" class="hint"></p>
+    <div class="form-row"><button id="exportButton" type="button">Экспорт правил</button><label>Добавить правила из файла <input id="rulesFile" type="file" accept=".json,application/json"></label></div>
+    <p class="hint">Импорт объединяет правила; совпадающие домены заменяются значениями из файла. Ключ подключения не экспортируется.</p>
+  </section>
+  <section class="card">
+    <h2>Диагностика и обновления</h2>
+    <button id="refreshButton" type="button">Проверить состояние</button>
+    <button id="updateButton" type="button">Проверить обновления</button>
+    <p id="updateStatus" class="hint"></p>
+    <button id="diagnosticsButton" type="button">Экспорт диагностики</button>
+    <p class="hint">Перед отправкой просмотри диагностику: в ней могут быть домены из правил и ошибок. Приватный ключ VPN и ключ controller API не включаются.</p>
+    <p class="hint">Для удаления сначала выключи управление маршрутами здесь, затем удали расширение и запусти uninstall.ps1 или uninstall.sh.</p>
+  </section>
+</main><script src="ui.js"></script><script src="settings.js"></script></body>
+</html>

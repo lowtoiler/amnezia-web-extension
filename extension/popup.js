@@ -1,224 +1,110 @@
-const siteElement = document.getElementById("site");
-const backendStatusElement = document.getElementById("backendStatus");
-const statusDot = document.getElementById("statusDot");
-const messageElement = document.getElementById("message");
-const directButton = document.getElementById("directButton");
-const vpnButton = document.getElementById("vpnButton");
-const updateCard = document.getElementById("updateCard");
-const updateText = document.getElementById("updateText");
-const updateButton = document.getElementById("updateButton");
+const element = id => document.getElementById(id);
+let hostname = '';
+let stopped = false;
+let writing = false;
+let probing = false;
+let refreshing = false;
+let releaseURL = '';
+let generation = 0;
 
-let routeHostname = "";
-let releaseURL = "";
-
-function setRouteButtonsEnabled(enabled) {
-  directButton.disabled = !enabled;
-  vpnButton.disabled = !enabled;
+function buttons(enabled) {
+  for (const id of ['directButton', 'vpnButton', 'inheritButton']) element(id).disabled = !enabled;
 }
 
-function renderRule(rule) {
-  directButton.classList.toggle("active", rule === "direct");
-  vpnButton.classList.toggle("active", rule === "vpn");
+function renderProbe(probe) {
+  if (!probe) return;
+  element('probeStatus').textContent = probe.outbound === 'reachable'
+    ? 'HTTP через AMNEZIA: ' + probe.delay + ' мс' + (probe.directDelay !== null ? '; Direct на том же URL: ' + probe.directDelay + ' мс' : '') + '. ' + new Date(probe.checkedAt).toLocaleTimeString() + '. Доступность текущего сайта и WebRTC этим не проверяются.'
+    : 'Выход не подтверждён: ' + probe.message;
 }
 
-async function getCurrentHostname() {
-  const tabs = await chrome.tabs.query({
-    active: true,
-    currentWindow: true
-  });
-
-  const tab = tabs[0];
-
-  if (!tab?.url) {
-    return "";
+function render(snapshot) {
+  element('version').textContent = snapshot.version;
+  const route = snapshot.route;
+  for (const [id, value] of [['directButton', 'direct'], ['vpnButton', 'vpn']]) {
+    const selected = route?.route === value && snapshot.preferences.enabled;
+    element(id).setAttribute('aria-pressed', String(selected));
+    element(id).classList.toggle('selected', selected);
   }
+  element('ruleSource').textContent = route?.source ? (route.bundle ? 'Набор доменов сервиса: ' : route.inherited ? 'Наследуется от: ' : 'Правило: ') + route.source : 'Собственное правило отсутствует.';
+  element('appliedStatus').textContent = !snapshot.proxy.applied
+    ? 'Настройка прокси не подтверждена: ' + (snapshot.applyError || snapshot.proxy.levelOfControl)
+    : snapshot.proxy.mode === 'released' ? 'Расширение не управляет прокси.' : 'PAC подтверждён Chrome.';
+  element('statusDot').style.background = snapshot.proxy.applied && !snapshot.privacyWarnings.length ? '#64748b' : '#f59e0b';
+  if (snapshot.privacyWarnings.length) element('appliedStatus').textContent += ' Защита приватности требует внимания в настройках.';
+  if (snapshot.lastProxyError) element('appliedStatus').textContent += ' Последняя ошибка прокси: ' + snapshot.lastProxyError.message + ' (' + new Date(snapshot.lastProxyError.at).toLocaleTimeString() + ').';
+  element('probeButton').disabled = !snapshot.paired || probing;
+  buttons(Boolean(hostname) && !writing && !Routing.bypassed(hostname));
+  renderProbe(snapshot.probe);
+}
 
+async function refresh() {
+  if (stopped || refreshing) return;
+  refreshing = true;
+  const requestGeneration = generation;
   try {
-    const url = new URL(tab.url);
-
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      return "";
-    }
-
-    return url.hostname.toLowerCase();
-  } catch {
-    return "";
-  }
+    const [snapshot, backend] = await Promise.all([UI.send('SNAPSHOT', { host: hostname }), UI.send('BACKEND_STATUS')]);
+    if (stopped || requestGeneration !== generation) return;
+    render(snapshot);
+    element('backendStatus').textContent = backend.controller === 'unpaired' ? 'Импортируй файл подключения в настройках.'
+      : backend.controller === 'reachable' ? 'Controller отвечает · mihomo ' + backend.coreVersion
+      : 'Controller недоступен: ' + backend.message;
+  } catch (error) { if (!stopped) UI.error(element('message'), error); }
+  finally { refreshing = false; }
 }
 
-async function normalizeHostname(hostname) {
-  const response = await chrome.runtime.sendMessage({
-    type: "NORMALIZE_HOST",
-    host: hostname
-  });
-
-  return response?.host || hostname;
-}
-
-async function getRule(hostname) {
-  const stored = await chrome.storage.local.get("routeRules");
-  return stored.routeRules?.[hostname] || "direct";
-}
-
-async function saveRule(hostname, rule) {
-  const stored = await chrome.storage.local.get("routeRules");
-  const rules = stored.routeRules || {};
-
-  if (rule === "direct") {
-    delete rules[hostname];
-  } else {
-    rules[hostname] = rule;
-  }
-
-  await chrome.storage.local.set({
-    routeRules: rules
-  });
-}
-
-async function refreshBackendStatus() {
-  const status = await chrome.runtime.sendMessage({
-    type: "BACKEND_STATUS"
-  });
-
-  if (status?.tunnel_ready) {
-    const delay = Number(status.delay);
-    const directDelay = status.direct_delay == null
-      ? Number.NaN
-      : Number(status.direct_delay);
-
-    if (Number.isFinite(delay) && Number.isFinite(directDelay)) {
-      const delta = delay - directDelay;
-      const deltaText = delta >= 0 ? `+${delta}` : String(delta);
-      backendStatusElement.textContent = `VPN RTT ${delay} мс · Direct ${directDelay} мс · Δ ${deltaText} мс`;
-    } else if (Number.isFinite(delay)) {
-      backendStatusElement.textContent = `VPN RTT ${delay} мс`;
-    } else {
-      backendStatusElement.textContent = "Подключен";
-    }
-
-    statusDot.style.background = "#22c55e";
-    return true;
-  }
-
-  if (status?.running) {
-    backendStatusElement.textContent = "Backend запущен · RTT недоступен";
-    statusDot.style.background = "#f59e0b";
-    return true;
-  }
-
-  backendStatusElement.textContent = "Не запущен";
-  statusDot.style.background = "#ef4444";
-  return false;
-}
-
-function renderUpdate(status) {
-  if (!status?.update_available || !status.release_url) {
-    updateCard.hidden = true;
-    releaseURL = "";
-    return;
-  }
-
-  releaseURL = status.release_url;
-  updateText.textContent = `Доступна версия ${status.latest_version}`;
-  updateCard.hidden = false;
-}
-
-async function refreshUpdateStatus() {
-  const cached = await chrome.runtime.sendMessage({
-    type: "GET_UPDATE_STATUS"
-  });
-
-  if (cached?.status) {
-    renderUpdate(cached.status);
-  }
-
-  const checkedAt = Number(cached?.checked_at) || 0;
-  const sixHours = 6 * 60 * 60 * 1000;
-
-  if (Date.now() - checkedAt < sixHours) {
-    return;
-  }
-
-  const current = await chrome.runtime.sendMessage({
-    type: "CHECK_UPDATE"
-  });
-
-  renderUpdate(current);
-}
-
-async function changeRule(rule) {
-  if (!routeHostname) {
-    return;
-  }
-
-  setRouteButtonsEnabled(false);
-
+async function changeRule(route) {
+  if (!hostname || writing) return;
+  writing = true;
+  generation++;
+  buttons(false);
+  element('message').textContent = 'Сохранение и проверка применения…';
   try {
-    await saveRule(routeHostname, rule);
-    renderRule(rule);
-
-    const result = await chrome.runtime.sendMessage({
-      type: "SYNC_PROXY"
-    });
-
-    if (!result?.ok) {
-      throw new Error(result?.error || "Не удалось применить правило");
-    }
-
-    const backendReady = await refreshBackendStatus();
-
-    if (rule === "vpn" && !backendReady) {
-      messageElement.textContent = "VPN выбран, но backend не запущен. Direct fallback отключен.";
-    } else {
-      messageElement.textContent = rule === "vpn"
-        ? `${routeHostname} → Amnezia Premium`
-        : `${routeHostname} → Direct`;
-    }
+    render(await UI.send('SET_RULE', { host: hostname, route }));
+    element('message').textContent = 'Правило сохранено; применение проверено. Для уже открытого сайта обнови страницу.';
   } catch (error) {
-    messageElement.textContent = error.message;
+    UI.error(element('message'), error);
+    try { render(await UI.send('SNAPSHOT', { host: hostname })); } catch (failure) { UI.error(element('message'), failure); }
   } finally {
-    setRouteButtonsEnabled(true);
+    writing = false;
+    buttons(!Routing.bypassed(hostname));
   }
 }
 
 async function initialize() {
-  setRouteButtonsEnabled(false);
-
-  const hostname = await getCurrentHostname();
-
-  if (!hostname) {
-    siteElement.textContent = "Служебная страница";
-    backendStatusElement.textContent = "Проверка...";
-    await refreshBackendStatus();
-    refreshUpdateStatus().catch(() => {});
-    return;
+  element('version').textContent = chrome.runtime.getManifest().version;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.url) {
+    const url = new URL(tab.url);
+    if (['http:', 'https:'].includes(url.protocol)) hostname = Routing.normalizeHost(url.hostname);
   }
-
-  routeHostname = await normalizeHostname(hostname);
-  siteElement.textContent = hostname;
-  renderRule(await getRule(routeHostname));
-  setRouteButtonsEnabled(true);
-
-  const backendReady = await refreshBackendStatus();
-
-  if (!backendReady) {
-    messageElement.textContent = "Запусти install.ps1 или install.sh с Amnezia Premium .conf";
+  element('site').textContent = hostname || 'Служебная страница';
+  if (hostname && Routing.bypassed(hostname)) element('message').textContent = 'Для localhost и link-local Chrome использует прямое соединение.';
+  await refresh();
+  const status = await UI.send('CHECK_UPDATE');
+  if (stopped) return;
+  element('updateStatus').textContent = UI.updateText(status);
+  element('updateCard').hidden = status.state !== 'available';
+  if (status.state === 'available') {
+    releaseURL = status.url;
+    element('updateText').textContent = 'Доступна версия ' + status.version;
   }
-
-  refreshUpdateStatus().catch(() => {});
 }
 
-directButton.addEventListener("click", () => changeRule("direct"));
-vpnButton.addEventListener("click", () => changeRule("vpn"));
-
-updateButton.addEventListener("click", () => {
-  if (releaseURL) {
-    chrome.tabs.create({
-      url: releaseURL
-    });
-  }
+element('directButton').addEventListener('click', () => changeRule('direct'));
+element('vpnButton').addEventListener('click', () => changeRule('vpn'));
+element('inheritButton').addEventListener('click', () => changeRule('remove'));
+element('settingsButton').addEventListener('click', () => chrome.runtime.openOptionsPage());
+element('updateButton').addEventListener('click', () => { if (releaseURL) chrome.tabs.create({ url: releaseURL }); });
+element('probeButton').addEventListener('click', async () => {
+  if (probing) return;
+  probing = true;
+  element('probeButton').disabled = true;
+  element('probeStatus').textContent = 'HTTP-проверка, до 17 секунд…';
+  try { renderProbe(await UI.send('PROBE_BACKEND')); }
+  catch (error) { UI.error(element('probeStatus'), error); }
+  finally { probing = false; element('probeButton').disabled = false; }
 });
-
-initialize().catch((error) => {
-  messageElement.textContent = error.message;
-});
+const interval = setInterval(refresh, 5000);
+window.addEventListener('pagehide', () => { stopped = true; clearInterval(interval); });
+initialize().catch(error => UI.error(element('message'), error));
